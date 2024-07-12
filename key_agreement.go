@@ -368,6 +368,7 @@ type ecdhePskKeyAgreement struct {
 	ckx         *clientKeyExchangeMsg
 	otherSecret []byte
 	pskIdentity string
+	isPSKOnly   bool
 }
 
 func (ka *ecdhePskKeyAgreement) generateServerKeyExchange(config *Config, cert *Certificate, clientHello *clientHelloMsg, hello *serverHelloMsg) (*serverKeyExchangeMsg, error) {
@@ -489,7 +490,7 @@ func (ka *ecdhePskKeyAgreement) processServerKeyExchange(config *Config, clientH
 		return errServerKeyExchange
 	}
 	pskIdentityFromServer := string(key[2 : 2+pskIdentityFromServerLen])
-	key = key[2:]
+	key = key[2+pskIdentityFromServerLen:]
 	_ = pskIdentityFromServer
 
 	pskIdentity := pskConfig.GetIdentity()
@@ -498,13 +499,32 @@ func (ka *ecdhePskKeyAgreement) processServerKeyExchange(config *Config, clientH
 	ka.pskIdentity = pskIdentity
 
 	if len(key) < 3 {
-		return errServerKeyExchange
+		// This might be PSK-only mode
+		ka.isPSKOnly = true
+		ka.ckx = new(clientKeyExchangeMsg)
+		ka.ckx.ciphertext = make([]byte, 2+pskIdentityLen)
+		ka.ckx.ciphertext[0] = byte(pskIdentityLen >> 8)
+		ka.ckx.ciphertext[1] = byte(pskIdentityLen)
+		copy(ka.ckx.ciphertext[2:], bPskIdentity)
+		return nil
 	}
 
+	curveID := CurveID(key[1])<<8 | CurveID(key[2])
+	if curveID == 0x4343 {
+		// PSK-only mode
+		ka.isPSKOnly = true
+		ka.ckx = new(clientKeyExchangeMsg)
+		ka.ckx.ciphertext = make([]byte, 2+pskIdentityLen)
+		ka.ckx.ciphertext[0] = byte(pskIdentityLen >> 8)
+		ka.ckx.ciphertext[1] = byte(pskIdentityLen)
+		copy(ka.ckx.ciphertext[2:], bPskIdentity)
+		return nil
+	}
+
+	// ECDHE-PSK mode
 	if key[0] != 3 { // named curve
 		return errors.New("tls: server selected unsupported curve")
 	}
-	curveID := CurveID(key[1])<<8 | CurveID(key[2])
 
 	publicLen := int(key[3])
 	if publicLen+4 > len(key) {
@@ -541,6 +561,10 @@ func (ka *ecdhePskKeyAgreement) processServerKeyExchange(config *Config, clientH
 }
 
 func (ka *ecdhePskKeyAgreement) generateClientKeyExchange(config *Config, clientHello *clientHelloMsg, cert *x509.Certificate) ([]byte, *clientKeyExchangeMsg, error) {
+	if ka.isPSKOnly {
+		return nil, ka.ckx, nil
+	}
+
 	pskConfig, ok := config.Extra.(PSKConfig)
 	if !ok {
 		return nil, nil, errors.New("bad Config - Extra not of type PSKConfig")

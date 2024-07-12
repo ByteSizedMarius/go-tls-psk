@@ -604,8 +604,11 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 	}
 	if ckx != nil {
 		hs.finishedHash.Write(ckx.marshal())
-		if _, err := c.writeRecord(recordTypeHandshake, ckx.marshal()); err != nil {
-			return err
+		// For PSK-only mode, we don't send the client key exchange message
+		if pskKA, ok := keyAgreement.(*ecdhePskKeyAgreement); !ok || !pskKA.isPSKOnly {
+			if _, err := c.writeRecord(recordTypeHandshake, ckx.marshal()); err != nil {
+				return err
+			}
 		}
 	}
 
